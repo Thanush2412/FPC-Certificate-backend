@@ -5,31 +5,33 @@ const { getDb } = require('../utils/db');
 
 router.get('/', async (req, res) => {
     const db = getDb();
-    const subjects = await db.all('SELECT * FROM subjects');
+    const subjectsMap = await db.hGetAll('fpc:subjects');
+    const subjects = Object.entries(subjectsMap).map(([id, name]) => ({ id, name }));
     res.json(subjects);
 });
 
 router.post('/', authenticate, async (req, res) => {
     const db = getDb();
     const { name } = req.body;
+    const id = Date.now().toString();
     try {
-        const result = await db.run('INSERT INTO subjects (name) VALUES (?)', [name]);
-        res.status(201).json({ id: result.lastID, name });
+        await db.hSet('fpc:subjects', id, name);
+        res.status(201).json({ id, name });
     } catch (err) {
-        res.status(400).json({ error: 'Subject already exists' });
+        res.status(400).json({ error: 'Failed to create subject' });
     }
 });
 
 router.patch('/:id', authenticate, async (req, res) => {
     const db = getDb();
     const { name } = req.body;
-    await db.run('UPDATE subjects SET name = ? WHERE id = ?', [name, req.params.id]);
+    await db.hSet('fpc:subjects', req.params.id, name);
     res.json({ message: 'Subject updated' });
 });
 
 router.delete('/:id', authenticate, async (req, res) => {
     const db = getDb();
-    await db.run('DELETE FROM subjects WHERE id = ?', [req.params.id]);
+    await db.hDel('fpc:subjects', req.params.id);
     res.json({ message: 'Subject deleted' });
 });
 

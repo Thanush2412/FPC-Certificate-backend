@@ -24,8 +24,9 @@ const generateCertificateId = () => {
 router.get('/', authenticate, async (req, res) => {
     const db = getDb();
     try {
-        const certs = await db.all('SELECT * FROM certificates ORDER BY timestamp DESC');
-        res.json(certs);
+        const certsMap = await db.hGetAll('fpc:certificates');
+        const certs = Object.values(certsMap).map(c => JSON.parse(c));
+        res.json(certs.sort((a, b) => b.timestamp - a.timestamp));
     } catch (err) {
         res.status(500).json({ error: 'Failed to fetch certificates' });
     }
@@ -35,9 +36,9 @@ router.get('/', authenticate, async (req, res) => {
 router.get('/:id', async (req, res) => {
     const db = getDb();
     try {
-        const cert = await db.get('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
-        if (!cert) return res.status(404).json({ error: 'Certificate not found' });
-        res.json(cert);
+        const certJson = await db.hGet('fpc:certificates', req.params.id);
+        if (!certJson) return res.status(404).json({ error: 'Certificate not found' });
+        res.json(JSON.parse(certJson));
     } catch (err) {
         res.status(500).json({ error: 'Failed to fetch certificate' });
     }
@@ -47,8 +48,9 @@ router.get('/:id', async (req, res) => {
 router.get('/:id/download', async (req, res) => {
     const db = getDb();
     try {
-        const cert = await db.get('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
-        if (!cert) return res.status(404).json({ error: 'Certificate not found' });
+        const certJson = await db.hGet('fpc:certificates', req.params.id);
+        if (!certJson) return res.status(404).json({ error: 'Certificate not found' });
+        const cert = JSON.parse(certJson);
 
         let pdfBuffer;
 
@@ -113,18 +115,12 @@ router.post('/', authenticate, async (req, res) => {
     const timestamp = Date.now();
 
     try {
-        await db.run(
-            `INSERT INTO certificates (
-                id, name, recipientId, recipientType, domain, issueDate, timestamp,
-                template, university, department, course, recognition, semester, logo
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                id, name, recipientId || '', recipientType || 'Mentor', domain || '', issueDate, timestamp,
-                template || 'standard', university || '', department || '', course || '',
-                recognition || '', semester || '', logo || ''
-            ]
-        );
-        const newCert = await db.get('SELECT * FROM certificates WHERE id = ?', [id]);
+        const newCert = {
+            id, name, recipientId: recipientId || '', recipientType: recipientType || 'Mentor', domain: domain || '', issueDate, timestamp,
+            template: template || 'standard', university: university || '', department: department || '', course: course || '',
+            recognition: recognition || '', semester: semester || '', logo: logo || ''
+        };
+        await db.hSet('fpc:certificates', id, JSON.stringify(newCert));
         res.status(201).json(newCert);
     } catch (err) {
         console.error('Create certificate error:', err);
@@ -141,16 +137,11 @@ router.patch('/:id', authenticate, async (req, res) => {
     if (keys.length === 0) return res.status(400).json({ error: 'No fields to update' });
 
     try {
-        const setClause = keys.map(key => `${key} = ?`).join(', ');
-        const values = [...Object.values(fields), req.params.id];
+        const certJson = await db.hGet('fpc:certificates', req.params.id);
+        if (!certJson) return res.status(404).json({ error: 'Certificate not found' });
 
-        const result = await db.run(
-            `UPDATE certificates SET ${setClause} WHERE id = ?`,
-            values
-        );
-
-        if (result.changes === 0) return res.status(404).json({ error: 'Certificate not found' });
-        const updatedCert = await db.get('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
+        const updatedCert = { ...JSON.parse(certJson), ...fields };
+        await db.hSet('fpc:certificates', req.params.id, JSON.stringify(updatedCert));
         res.json(updatedCert);
     } catch (err) {
         console.error('Update certificate error:', err);
@@ -162,8 +153,8 @@ router.patch('/:id', authenticate, async (req, res) => {
 router.delete('/:id', authenticate, async (req, res) => {
     const db = getDb();
     try {
-        const result = await db.run('DELETE FROM certificates WHERE id = ?', [req.params.id]);
-        if (result.changes === 0) return res.status(404).json({ error: 'Certificate not found' });
+        const deleted = await db.hDel('fpc:certificates', req.params.id);
+        if (deleted === 0) return res.status(404).json({ error: 'Certificate not found' });
         res.json({ message: 'Certificate deleted successfully' });
     } catch (err) {
         res.status(500).json({ error: 'Failed to delete certificate' });

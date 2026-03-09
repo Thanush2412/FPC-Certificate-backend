@@ -12,14 +12,25 @@ const upload = multer({ storage: multer.memoryStorage() });
 router.get('/', authenticate, async (req, res) => {
     const db = getDb();
     try {
-        const mentors = await db.all(`
-            SELECT m.*, MAX(c.issueDate) as lastGeneratedDate 
-            FROM mentors m 
-            LEFT JOIN certificates c ON m.employeeId = c.recipientId 
-            GROUP BY m.id
-        `);
-        res.json(mentors);
+        const mentorsMap = await db.hGetAll('fpc:entities');
+        const mentors = Object.values(mentorsMap).map(m => JSON.parse(m));
+
+        const certsMap = await db.hGetAll('fpc:certificates');
+        const certs = Object.values(certsMap).map(c => JSON.parse(c));
+
+        // In-memory join/grouping
+        const result = mentors.map(m => {
+            const myCerts = certs.filter(c => c.recipientId === m.employeeId);
+            const lastCert = myCerts.sort((a, b) => b.timestamp - a.timestamp)[0];
+            return {
+                ...m,
+                lastGeneratedDate: lastCert ? lastCert.issueDate : null
+            };
+        });
+
+        res.json(result);
     } catch (err) {
+        console.error(err);
         res.status(500).json({ error: 'Failed to fetch people' });
     }
 });
@@ -28,40 +39,69 @@ router.post('/', authenticate, async (req, res) => {
     const db = getDb();
     const { name, employeeId, email, type } = req.body;
     if (!name || !employeeId) return res.status(400).json({ error: 'Name and Employee ID required' });
+
+    const id = Date.now().toString();
+    const entity = { id, name, employeeId, email: email || '', type: type || 'Mentor' };
+
     try {
-        await db.run('INSERT INTO mentors (name, employeeId, email, type) VALUES (?, ?, ?, ?)',
-            [name, employeeId, email || '', type || 'Mentor']);
+        await db.hSet('fpc:entities', employeeId, JSON.stringify(entity));
         res.status(201).json({ message: 'Person added' });
     } catch (err) {
-        res.status(400).json({ error: 'Person or Employee ID already exists' });
+        res.status(400).json({ error: 'Failed to add person' });
     }
 });
 
 router.patch('/:id', authenticate, async (req, res) => {
     const db = getDb();
     const fields = req.body;
-    const keys = Object.keys(fields);
-
-    if (keys.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    const employeeId = fields.employeeId; // We need to know which hash field to update
 
     try {
-        const setClause = keys.map(key => `${key} = ?`).join(', ');
-        const values = [...Object.values(fields), req.params.id];
+        // Find by ID is slow in Hash-by-EmpID, but we can iterate
+        const entities = await db.hGetAll('fpc:entities');
+        let targetEmpId = null;
+        let existing = null;
 
-        await db.run(
-            `UPDATE mentors SET ${setClause} WHERE id = ?`,
-            values
-        );
+        for (const [empId, json] of Object.entries(entities)) {
+            const obj = JSON.parse(json);
+            if (obj.id === req.params.id) {
+                targetEmpId = empId;
+                existing = obj;
+                break;
+            }
+        }
+
+        if (!existing) return res.status(404).json({ error: 'Person not found' });
+
+        const updated = { ...existing, ...fields };
+
+        // If employeeId changed, delete old field
+        if (targetEmpId !== updated.employeeId) {
+            await db.hDel('fpc:entities', targetEmpId);
+        }
+
+        await db.hSet('fpc:entities', updated.employeeId, JSON.stringify(updated));
         res.json({ message: 'Person updated' });
     } catch (err) {
-        res.status(400).json({ error: 'Failed to update or Employee ID already exists: ' + err.message });
+        res.status(400).json({ error: 'Failed to update: ' + err.message });
     }
 });
 
 router.delete('/:id', authenticate, async (req, res) => {
     const db = getDb();
-    await db.run('DELETE FROM mentors WHERE id = ?', [req.params.id]);
-    res.json({ message: 'Entry deleted' });
+    try {
+        const entities = await db.hGetAll('fpc:entities');
+        for (const [empId, json] of Object.entries(entities)) {
+            const obj = JSON.parse(json);
+            if (obj.id === req.params.id) {
+                await db.hDel('fpc:entities', empId);
+                break;
+            }
+        }
+        res.json({ message: 'Entry deleted' });
+    } catch (err) {
+        res.status(500).json({ error: 'Delete failed' });
+    }
 });
 
 router.post('/preview', authenticate, upload.single('file'), async (req, res) => {
@@ -102,18 +142,11 @@ router.post('/bulk-import', authenticate, upload.single('file'), async (req, res
 
             try {
                 // Check if exists
-                const existing = await db.get('SELECT id FROM mentors WHERE employeeId = ?', [employeeId]);
-                if (existing) {
-                    await db.run(
-                        'UPDATE mentors SET name = ?, email = ?, type = ? WHERE id = ?',
-                        [name, email, type, existing.id]
-                    );
-                } else {
-                    await db.run(
-                        'INSERT INTO mentors (name, employeeId, email, type) VALUES (?, ?, ?, ?)',
-                        [name, employeeId, email, type]
-                    );
-                }
+                const existingJson = await db.hGet('fpc:entities', employeeId);
+                const id = existingJson ? JSON.parse(existingJson).id : Date.now().toString() + Math.random();
+                const entity = { id, name, employeeId, email, type };
+
+                await db.hSet('fpc:entities', employeeId, JSON.stringify(entity));
                 results.success++;
             } catch (err) {
                 results.failed++;

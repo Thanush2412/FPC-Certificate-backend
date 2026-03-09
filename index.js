@@ -29,21 +29,27 @@ initDb().then(() => {
     app.use('/api/logos', logoRoutes);
     app.use('/api/subjects', subjectRoutes);
 
-    // Stats route (kept in index for simplicity or can be a separate route)
+    // Stats route
     app.get('/api/stats', authenticate, async (req, res) => {
         const db = getDb();
         try {
-            const certsCount = await db.get('SELECT COUNT(*) as count FROM certificates');
-            const domainsCount = await db.get('SELECT COUNT(*) as count FROM subjects');
+            const totalIssued = await db.hLen('fpc:certificates');
+            const activeDomains = await db.hLen('fpc:subjects');
+
             const monthPrefix = new Date().toISOString().slice(0, 7);
-            const monthCount = await db.get('SELECT COUNT(*) as count FROM certificates WHERE issueDate LIKE ?', [`${monthPrefix}%`]);
+            const allCerts = await db.hGetAll('fpc:certificates');
+            const thisMonth = Object.values(allCerts)
+                .map(c => JSON.parse(c))
+                .filter(c => c.issueDate.startsWith(monthPrefix))
+                .length;
 
             res.json({
-                totalIssued: certsCount.count,
-                activeDomains: domainsCount.count,
-                thisMonth: monthCount.count
+                totalIssued,
+                activeDomains,
+                thisMonth
             });
         } catch (err) {
+            console.error(err);
             res.status(500).json({ error: 'Failed to fetch stats' });
         }
     });
