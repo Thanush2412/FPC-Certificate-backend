@@ -1,4 +1,15 @@
-const puppeteer = require('puppeteer');
+const isVercel = process.env.VERCEL || process.env.NODE_ENV === 'production';
+
+let puppeteer;
+let chromium;
+
+if (isVercel) {
+    puppeteer = require('puppeteer-core');
+    chromium = require('@sparticuz/chromium');
+} else {
+    puppeteer = require('puppeteer');
+}
+
 const { PDFDocument } = require('pdf-lib');
 const fs = require('fs');
 const path = require('path');
@@ -12,10 +23,20 @@ let _browser = null;
 
 async function getBrowser() {
     if (!_browser || !_browser.connected) {
-        _browser = await puppeteer.launch({
-            headless: 'new',
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        });
+        if (isVercel) {
+            _browser = await puppeteer.launch({
+                args: chromium.args,
+                defaultViewport: chromium.defaultViewport,
+                executablePath: await chromium.executablePath(),
+                headless: chromium.headless,
+                ignoreHTTPSErrors: true,
+            });
+        } else {
+            _browser = await puppeteer.launch({
+                headless: 'new',
+                args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            });
+        }
     }
     return _browser;
 }
