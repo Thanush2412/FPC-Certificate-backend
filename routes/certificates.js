@@ -161,6 +161,72 @@ router.delete('/:id', authenticate, async (req, res) => {
     }
 });
 
+const multer = require('multer');
+const XLSX = require('xlsx');
+const upload = multer({ storage: multer.memoryStorage() });
+
+// Preview headers for bulk import
+router.post('/preview', authenticate, upload.single('file'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    try {
+        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+        if (data.length === 0) return res.status(400).json({ error: 'File is empty' });
+        res.json({ headers: data[0] });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to read file headers' });
+    }
+});
+
+// Bulk import certificates
+router.post('/bulk-import', authenticate, upload.single('file'), async (req, res) => {
+    const db = getDb();
+    const { mapping } = req.body;
+    if (!req.file || !mapping) return res.status(400).json({ error: 'File and mapping are required' });
+
+    try {
+        const map = JSON.parse(mapping);
+        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+
+        const results = { success: 0, failed: 0, errors: [] };
+        const timestamp = Date.now();
+
+        for (const row of data) {
+            const name = String(row[map.name] || '').trim();
+            const issueDate = String(row[map.issueDate] || '').trim();
+            const domain = String(row[map.domain] || '').trim();
+            const recipientId = String(row[map.recipientId] || '').trim();
+            const recipientType = String(row[map.recipientType] || 'Mentor').trim();
+            const customId = String(row[map.id] || '').trim();
+
+            if (!name || !issueDate) {
+                results.failed++;
+                results.errors.push(`Row missing Name or Issue Date: ${JSON.stringify(row)}`);
+                continue;
+            }
+
+            try {
+                const id = customId || generateCertificateId();
+                const newCert = {
+                    id, name, recipientId, recipientType, domain, issueDate, timestamp,
+                    template: 'standard' // Default to standard for bulk import
+                };
+                await db.hSet('fpc:certificates', id, JSON.stringify(newCert));
+                results.success++;
+            } catch (err) {
+                results.failed++;
+                results.errors.push(`${name}: ${err.message}`);
+            }
+        }
+        res.json(results);
+    } catch (err) {
+        console.error('Bulk import error:', err);
+        res.status(500).json({ error: 'Import failed: ' + err.message });
+    }
+});
+
 // API appreciation generate specific route
 router.post('/appreciation/generate', async (req, res) => {
     try {
