@@ -26,20 +26,20 @@ async function initDb() {
     console.log('Default subjects seeded in Redis.');
   }
 
-  // Seed Admin user if it doesn't exist
+  // Seed/Sync Admin user
   const adminEmail = process.env.ADMIN_EMAIL || 'admin@fpc.com';
+  const adminPassword = process.env.ADMIN_PASSWORD || 'password';
   const usersKey = 'fpc:users';
-  const adminExists = await client.hGet(usersKey, adminEmail);
-  if (!adminExists) {
-    const hashedPassword = await bcrypt.hash(process.env.ADMIN_PASSWORD || 'password', 10);
-    const adminUser = {
-      email: adminEmail,
-      password: hashedPassword,
-      role: 'admin'
-    };
-    await client.hSet(usersKey, adminEmail, JSON.stringify(adminUser));
-    console.log('Admin user seeded in Redis.');
-  }
+  
+  const hashedPassword = await bcrypt.hash(adminPassword, 10);
+  const adminUser = {
+    email: adminEmail,
+    password: hashedPassword,
+    role: 'admin'
+  };
+  
+  await client.hSet(usersKey, adminEmail, JSON.stringify(adminUser));
+  console.log(`Admin user synced in Redis for: ${adminEmail}`);
 
   return client;
 }
