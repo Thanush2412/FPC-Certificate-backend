@@ -9,6 +9,14 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+// Middleware to ensure DB is ready
+app.use((req, res, next) => {
+    if (!getDb() && req.path !== '/api/health') {
+        return res.status(503).json({ error: 'Server is starting up, please try again in a moment.' });
+    }
+    next();
+});
+
 // --- Register Routes Synchronously (Critical for Vercel) ---
 const authRoutes = require('./routes/auth');
 const certificateRoutes = require('./routes/certificates');
