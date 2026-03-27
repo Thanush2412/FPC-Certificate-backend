@@ -211,7 +211,8 @@ router.post('/bulk-import', authenticate, upload.single('file'), async (req, res
                 const id = customId || generateCertificateId();
                 const newCert = {
                     id, name, recipientId, recipientType, domain, issueDate, timestamp,
-                    template: 'standard' // Default to standard for bulk import
+                    template: 'standard', // Default to standard for bulk import
+                    isImported: true
                 };
                 await db.hSet('fpc:certificates', id, JSON.stringify(newCert));
                 results.success++;
