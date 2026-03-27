@@ -54,10 +54,14 @@ initDb().then(() => {
         }
     });
 
-    app.listen(PORT, () => {
-        console.log(`Server running on http://localhost:${PORT}`);
-    });
+    if (process.env.NODE_ENV !== 'production') {
+        app.listen(PORT, () => {
+            console.log(`Server running on http://localhost:${PORT}`);
+        });
+    }
 }).catch(err => {
     console.error('DB initialization failed:', err);
     process.exit(1);
 });
+
+module.exports = app;
