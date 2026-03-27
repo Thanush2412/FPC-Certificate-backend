@@ -4,6 +4,8 @@ node_modules/
 # Environment variables
 .env
 .env.*
+firebase-service-account.json
+*firebase-adminsdk*.json
 
 # Logs
 logs/
@@ -41,4 +43,4 @@ Thumbs.db
 *.lock
 
 # Archives
-*.zip
+*.zipfirebase-service-account.json 
