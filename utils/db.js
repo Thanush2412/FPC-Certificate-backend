@@ -4,22 +4,37 @@ require('dotenv').config();
 
 let db;
 
+/**
+ * Initialize Firebase Realtime Database connection.
+ * Uses a Redis-compatible wrapper to maintain existing route logic while migrating to Firebase.
+ */
 async function initDb() {
   if (admin.apps.length === 0) {
     let serviceAccount;
     
-    // Check for BASE64 encoded JSON (best for Vercel/Hosting)
+    // 1. Prioritize BASE64 encoded JSON (ideal for Vercel Environment Variables)
     if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON_BASE64) {
-      const decoded = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_JSON_BASE64, 'base64').toString('utf8');
-      serviceAccount = JSON.parse(decoded);
-    } else if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-    } else {
-      // Fallback to local file if needed
+      try {
+        const decoded = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_JSON_BASE64, 'base64').toString('utf8');
+        serviceAccount = JSON.parse(decoded);
+      } catch (e) {
+        console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON_BASE64:', e.message);
+      }
+    } 
+    // 2. Fallback to raw JSON string
+    else if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+      try {
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+      } catch (e) {
+        console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON:', e.message);
+      }
+    } 
+    // 3. Final fallback to local development file
+    else {
       try {
         serviceAccount = require('../../firebase-service-account.local.json');
       } catch (e) {
-        console.error('Firebase Service Account credentials missing!');
+        console.warn('Firebase Service Account credentials not found in ENV or local file.');
       }
     }
 
@@ -28,42 +43,55 @@ async function initDb() {
         credential: admin.credential.cert(serviceAccount),
         databaseURL: process.env.FIREBASE_DATABASE_URL
       });
-      console.log('Firebase Admin initialized.');
+      console.log('🔥 Firebase Admin initialized successfully.');
+    } else {
+      throw new Error('Database initialization failed: Missing Firebase credentials.');
     }
   }
 
   db = admin.database();
   
-  // Wrapper for Redis-style operations to minimize route changes
-  const redisWrapper = {
+  /**
+   * DATABASE WRAPPER
+   * We keep these 'Redis-style' method names (hGet, hSet, hGetAll) to ensure
+   * compatibility with all existing route logic without requiring a massive refactor.
+   */
+  const firebaseWrapper = {
+    // Get all fields in a 'Hash' (Firebase Object)
     hGetAll: async (key) => {
       const path = key.replace('fpc:', '');
       const snapshot = await db.ref(path).once('value');
       return snapshot.val() || {};
     },
+    // Get a specific field from a 'Hash'
     hGet: async (key, field) => {
       const path = key.replace('fpc:', '');
-      const snapshot = await db.ref(`${path}/${field.replace(/\./g, '_')}`).once('value');
+      // Firebase keys cannot contain '.' - sanitize for things like emails
+      const sanitizedField = field.replace(/\./g, '_');
+      const snapshot = await db.ref(`${path}/${sanitizedField}`).once('value');
       return snapshot.val();
     },
+    // Set a field in a 'Hash'
     hSet: async (key, field, value) => {
       const path = key.replace('fpc:', '');
-      // Firebase keys can't contain certain characters (like '.') so we sanitize emails
-      const sanitizedField = field.replace(/\./g, '_');
+      const sanitizedField = String(field).replace(/\./g, '_');
       await db.ref(`${path}/${sanitizedField}`).set(value);
       return 1;
     },
+    // Delete a field from a 'Hash'
     hDel: async (key, field) => {
       const path = key.replace('fpc:', '');
-      const sanitizedField = field.replace(/\./g, '_');
+      const sanitizedField = String(field).replace(/\./g, '_');
       await db.ref(`${path}/${sanitizedField}`).remove();
       return 1;
     },
+    // Count items in a 'Hash'
     hLen: async (key) => {
       const path = key.replace('fpc:', '');
       const snapshot = await db.ref(path).once('value');
       return snapshot.numChildren();
     },
+    // Check if a path exists
     exists: async (key) => {
       const path = key.replace('fpc:', '');
       const snapshot = await db.ref(path).once('value');
@@ -71,17 +99,18 @@ async function initDb() {
     }
   };
 
-  // Seed default subjects
-  const subjectsExists = await redisWrapper.exists('fpc:subjects');
+  // --- Bootstrapping: Seed default subjects ---
+  const subjectsExists = await firebaseWrapper.exists('fpc:subjects');
   if (!subjectsExists) {
     const defaults = ['Data Science', 'Web Development', 'UI/UX Design', 'Cloud Architecture', 'Cybersecurity', 'AI & Machine Learning'];
     for (const s of defaults) {
-      await redisWrapper.hSet('fpc:subjects', Date.now() + Math.random().toString().slice(2, 6), s);
+      // Use a timestamp-based ID for default subjects
+      await firebaseWrapper.hSet('fpc:subjects', Date.now() + Math.random().toString().slice(2, 6), s);
     }
-    console.log('Default subjects seeded in Firebase.');
+    console.log('✅ Default subjects seeded in Firebase.');
   }
 
-  // Seed/Sync Admin user
+  // --- Bootstrapping: Synchronize Admin Account ---
   const adminEmail = process.env.ADMIN_EMAIL || 'admin@fpc.com';
   const adminPassword = process.env.ADMIN_PASSWORD || 'password';
   const hashedPassword = await bcrypt.hash(adminPassword, 10);
@@ -91,15 +120,20 @@ async function initDb() {
     role: 'admin'
   };
   
-  await redisWrapper.hSet('fpc:users', adminEmail, JSON.stringify(adminUser));
-  console.log(`Admin user synced in Firebase for: ${adminEmail}`);
+  // We ALWAYS update the admin password on restart to match the current ENV
+  await firebaseWrapper.hSet('fpc:users', adminEmail, JSON.stringify(adminUser));
+  console.log(`👤 Admin user synced in Firebase: ${adminEmail}`);
 
-  db.redisCompatible = redisWrapper;
+  // Attach the wrapper to the db object so it can be retrieved globally
+  db.firebaseWrapper = firebaseWrapper;
   return db;
 }
 
+/**
+ * Global getter for the Database wrapper
+ */
 function getDb() {
-  return db.redisCompatible;
+  return db.firebaseWrapper;
 }
 
 module.exports = { initDb, getDb };
